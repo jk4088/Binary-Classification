@@ -1,0 +1,416 @@
+---
+title: "QMSS4058 Final Project"
+author: "Joo Kim and Christina Iacovides"
+date: "12/22/2017"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+We are interested in predicting whether or not an employee leaves prematurely, using "HR Analytics" data set from Kaggle.com. You can find out more about the data from https://www.kaggle.com/ludobenistant/hr-analytics-1. 
+
+```{r}
+d = read.csv("HR_comma_sep.csv")
+str(d) 
+```
+
+The dataset has 10 variables, 2 of which are numeric, 6 of which are integers, and 2 of which are factors (1 with 10 levels and 1 with 3 levels). The dependent variable is "left", coded as 0 if they stay, and 1 if they leave prematurely. For ease of interpretation, we will factor the "left" variable to be "No" if they stay and "Yes" if they leave prematurely, respectively. 
+
+```{r}
+d$left <- factor(d$left, levels = 0:1, labels = c("No", "Yes"))
+```
+
+We also factored the promo_5_years variable, to be coded as "No" if they were not promoted within the last 5 years, and "Yes" if they were promoted in the last 5 years. 
+
+```{r}
+d$promo_5years <- factor(d$promo_5years, levels = 0:1, labels = c("No", "Yes"))
+```
+
+In addition, we manipulated the data to make numeric variables that are coded as integers in the dataset. 
+
+```{r}
+d$projectnumber <- as.numeric(d$projectnumber)
+d$ave_month_hours <- as.numeric(d$ave_month_hours)
+d$time_w_comp <- as.numeric(d$time_w_comp)
+d$work_accid <- as.numeric(d$work_accid)
+```
+
+We then scaled and centered the numeric variables.
+
+```{r}
+data <- scale(d[, c(1:6)])
+data <- cbind(data, d[, c(7:10)])
+```
+
+
+```{r}
+table(data$left)
+```
+
+We looked at the distribution of the outcome variable; there are more cases of people staying than leaving prematurely. We assume that companies generally are more interested in identifying individuals who will leave than stay, as high attrition rate is bad for its bottom line. 
+
+Therefore, we used the SMOTE function to make the dataset more balanced, so classes are presented more equally. The new dataset also has more Yes's, the outcome of our interest. 
+
+
+```{r}
+library(DMwR)
+data2 <- SMOTE(left ~ ., data, perc.over = 200, k = 5, perc.under = 100)
+table(data2$left)
+```
+
+For our model fitting, we will set the threshold of leaving at 50%, but one may set different thresholds depending on their goals for prediction. Lowering the threshold below 50% may more accurately identify those who leave at the expense of falsely identifying as left those who end up staying at the company. 
+
+We divided the data into the training set to fit the model, and the testing set for the purpose of making predictions with the tuned model. The training set contains 75% of the original data, with the testing set containing the remaining 25%.
+
+```{r}
+library(caret)
+set.seed(12345)
+in_train <- createDataPartition(y = data2$left, p = 3 / 4, list = F)
+training <- data2[in_train,]
+testing <- data2[-in_train,]
+c(training = nrow(training), testing = nrow(testing))
+```
+
+Finally, we used the caret package to set a 10-fold cross-validation for models with tuning parameters. 
+
+```{r}
+ctrl <- trainControl(method = "cv", number = 10, 
+                     summaryFunction = twoClassSummary, classProbs = T)
+```
+
+
+## Logistic Regression
+
+We began with a logistic regression that includes all variables. 
+
+```{r}
+logit <- glm(left ~ ., data = training, family = binomial)
+y_hat_logit <- predict(logit, newdata = testing, type = "response")
+z_logit <- as.integer(y_hat_logit > 0.5) 
+table_logit <- table(testing$left, z_logit)
+sum(diag(table_logit)) / sum(table_logit)
+```
+
+Next, we tried a fully interacted model to see if this would improve the prediction rate. 
+
+```{r}
+logit_inter <- glm(left ~ (.)^2, data = training, family = binomial)
+y_hat_logit_inter <- predict(logit_inter, newdata = testing, type = "response")
+z_logit_inter <- as.integer(y_hat_logit_inter > 0.5)
+table_logit_inter <- table(testing$left, z_logit_inter)
+sum(diag(table_logit_inter)) / sum(table_logit_inter)
+```
+
+Prediction accuracy has increased significantly. We have a better true positive rate, meaning we can better predict those who leave prematurely as "Yes".
+
+We also fit a model that includes all numeric independent variables as quadratic terms.
+
+```{r}
+logit_quad <- glm(left ~ . + I(satislevel^2) + I(lasteval^2) + I(projectnumber^2) + 
+                    I(time_w_comp^2) + I(ave_month_hours^2), 
+                  data = training, family = binomial)
+y_hat_logit_quad <- predict(logit_quad, newdata = testing, type = "response")
+z_logit_quad <- as.integer(y_hat_logit_quad > 0.5)
+table_logit_quad <- table(testing$left, z_logit_quad)
+sum(diag(table_logit_quad)) / sum(table_logit_quad)
+```
+
+The prediction accuracy fell with the above model. Adding the quadratic terms and removing the interaction terms decreased the predictive power of the model. Therefore, we fit a logit model that includes both interactive and quadratic terms. 
+
+```{r}
+logit_all <- glm(left ~ (.)^2 + I(satislevel^2) + I(lasteval^2) + 
+                   I(projectnumber^2) + I(time_w_comp^2) + I(ave_month_hours^2), 
+                 data = training, family = binomial)
+y_hat_logit_all <- predict(logit_all, newdata = testing, type = "response")
+z_logit_all <- as.integer(y_hat_logit_all > 0.5)
+table_logit_all <- table(testing$left, z_logit_all)
+sum(diag(table_logit_all)) / sum(table_logit_all)
+```
+
+The final logit model gives the best prediction rate. Next, we used the step function to cull some variables that may not add to the predictive power of the model. 
+
+```{r}
+AIC <- step(logit_all, trace = FALSE)
+```
+
+```{r}
+setdiff(names(coef(logit_all)), names(coef(AIC)))
+```
+
+The step AIC function removed the variables shown above. Now we use the AIC-culled logit model to predict using testing data. 
+
+```{r}
+yhat_AIC <- predict(AIC, testing)
+z_AIC <- as.integer(yhat_AIC > 0.5)
+table_AIC <- table(testing$left, z_AIC)
+sum(diag(table_AIC)) / sum(table_AIC)
+```
+
+The prediction accuracy rate is just slightly lower than the logistic model with all the terms prior to Step AIC. We suspect it may be because some variables are not as informative, and the accumulated errors are decreasing our prediction accuracy. 
+
+Logistic models produce linear decision boundaries that are highly-interpretable, computationally efficient results. With this data set, logistic models prove to be very effective.  
+
+
+## Ridge and Lasso models
+
+Ridge and lasso models are regularization methods that add penalties for multicollinearity. We first tried ridge classification. We used the logit model that produced the best prediction accuracy to fit the ridge model. 
+
+Ridge regression minimizes the SSR plus λ times the sum-of-squared coefficients. This second term is the shrinkage penalty, which shrinks coefficients towards zero. When λ is very large, then all of the ridge coefficient estimates are essentially zero, therefore giving the null model. However, unlike the Lasso regression, this penalty will shrink the coefficients towards zero, but will not set any of them exactly equal to zero. Ridge regression is most effective when the least squares estimates have high variance.
+
+```{r}
+library(glmnet)
+library(MASS)
+X_glmnet <- model.matrix(logit_all, data = training)[, -1]
+cv.out <- cv.glmnet(X_glmnet, training$left, alpha = 0, 
+                    family = "binomial")
+bestlam <- cv.out$lambda.min
+glmnet <- glmnet(X_glmnet, y = training$left, alpha = 0, 
+                 lambda = bestlam, family = "binomial")
+
+X_test1 <- model.matrix(logit_all, data = testing)[, -1]
+glmnet_yhat <- predict(glmnet, newx = X_test1, type = "class")
+glmnet_table <- table(testing$left, glmnet_yhat)
+sum(diag(glmnet_table)) / sum(glmnet_table)
+```
+
+Next we try lasso, which performs variable selection by shrinking large coefficients (sign of collinearity) to zero. 
+
+Lasso regression minimizes the SSR plus λ times the sum-of-absolute coefficients. The second term is again the penalty, and forces some of the coefficient estimates to be exactly equal to zero when the tuning parameter λ is sufficiently large. When λ = 0, then the lasso simply gives the least squares model, but when λ is sufficiently large, the lasso gives the null model in which all coefficient estimates equal zero.
+
+```{r}
+cv.out2 <- cv.glmnet(X_glmnet, training$left, alpha = 1, 
+                    family = "binomial")
+bestlam2 <- cv.out2$lambda.min
+glmnet_lasso <- glmnet(X_glmnet, y = training$left, alpha = 1, 
+                 lambda = bestlam2, family = "binomial")
+
+glmnet_yhat2 <- predict(glmnet_lasso, newx = X_test1, type = "class")
+glmnet_table2 <- table(testing$left, glmnet_yhat2)
+sum(diag(glmnet_table2)) / sum(glmnet_table2)
+```
+
+Lasso performs better than Ridge after removing some variables. Lasso outperforms Ridge when the data contain a few predictors that have a disproportionately significant effect on the outcome, while the remaining predictors have coefficients that are very small or equal to zero. The variables that Lasso removed are listed below. 
+
+```{r}
+rownames(glmnet_lasso$beta)[which(glmnet_lasso$beta == 0)]
+```
+
+
+## Linear Discriminant Analysis & Quadratic Discriminant Analysis
+
+LDA is a naive classification method that doesn't consider interactions between covariates. We expect LDA to perform worse than the full logit model. 
+
+```{r}
+library(MASS)
+LDA <- lda(left ~ ., data = training)
+y_hat_LDA <- predict(LDA, newdata = testing)
+summary(y_hat_LDA$posterior)
+z_LDA <- y_hat_LDA$class
+table_LDA <- table(testing$left, z_LDA) 
+sum(diag(table_LDA)) / sum(table_LDA)
+```
+
+As expected, prediction accuracy is worse with LDA than the best logit model. Next we tried QDA. QDA, simlarly to LDA, assumes that the observations from each class are drawn from a Gaussian distribution, and performs predictions by plugging estimates for the parameters into Bayes’ theorem. However, unlike LDA, QDA assumes that each class has its own covariance matrix. 
+
+```{r}
+QDA <- qda(left ~ ., data = training)
+y_hat_QDA <- predict(QDA, newdata = testing) 
+z_QDA <- y_hat_QDA$class
+summary(y_hat_QDA$posterior)
+table_QDA <- table(testing$left, z_QDA)
+sum(diag(table_QDA)) / sum(table_QDA) 
+```
+
+```{r}
+QDA1 <- qda(left ~ . - promo_5years + I(satislevel^2) + I(lasteval^2) + 
+              I(projectnumber^2) + I(time_w_comp^2) + I(ave_month_hours^2), 
+            data = training)
+y_hat_QDA1 <- predict(QDA1, newdata = testing) 
+z_QDA1 <- y_hat_QDA1$class
+summary(y_hat_QDA1$posterior)
+table_QDA1 <- table(testing$left, z_QDA1)
+sum(diag(table_QDA1)) / sum(table_QDA1)
+```
+
+Including quadratic terms in the QDA model slightly improved the prediction rate. 
+
+LDA produces linear decision boundaries, while QDA produces quadratic decision boundaries. Given that QDA had a higher prediction rate than LDA, we can infer that there may be non-linear, quadratic relationships present in our data. 
+
+
+## KNN
+
+K-Nearest Neighbors, a nonparametric method, considers K closest training fellow data points in the feature space to classify the data point of interest.In particular, given a prediction point x0, KNN identifies the K closest training observations to x0, and uses the average of these training responses to estimate f(x0). On one hand, having a small value of K will give the lowest bias but higher variance. On the other hand, having a big value allows a smoother fit but higher bias. We will be performing a 10-fold cross-validation to determine the number of K for our KNN. 
+
+We removed factor variables when performing KNN. 
+
+```{r}
+library(caret) 
+library(class)
+knnfit <- train(training[, c(1:6)], training$left, method = "knn", metric = "ROC",
+                trControl = ctrl)
+knnfit$bestTune 
+knn_yhat1 <- knn(training[, c(1:6)], testing[, c(1:6)], 
+                training$left, k = 9) 
+table_knn1 <- table(knn_yhat1, testing$left)
+sum(diag(table_knn1)) / sum(table_knn1)
+```
+
+KNN performs very well with testing data, better than the logistic regression, LDA and QDA, which allows us to confirm our suspicion that there exists more complicated decision boundaries. 
+
+
+## Tree Models
+
+Tree methods divide the predictor space into non-overlapping regions, and when considering each split, attempts to minimize residual sum of squares for regression problems, and minimize classification error rate or gini index (node purity) for classification problems. 
+
+Trees are inherently capable of effectively handling complicated data sets and are interactive in nature. They are computationally efficient and particularly effective when your number of predicors is greater than the number of observations.
+
+We start with a simple tree. 
+
+```{r}
+library(tree)
+treemod <- tree(left ~ ., data = training)
+yhat_tree <- predict(treemod, newdata = testing, type = "class")
+table_tree <- table(testing$left, yhat_tree)
+sum(diag(table_tree)) / sum(table_tree)
+```
+
+A single tree has gives a very high prediction accuracy rate. 
+
+Next, we tried cross-validation to calculate the optimal tree size. We plotted the error rate and surmise that 8 nodes may result in the lowest error rate; We prune the tree to have 8 nodes.
+
+The idea of tree pruning is to grow a large tree and 'prune' it, to get the subtree with the lowest test error rate. Pruning overcomes the problem of overfitting in simple trees. 
+```{r}
+cv.tree <- cv.tree(treemod, FUN = prune.misclass)
+plot(cv.tree$size, cv.tree$dev, type = 'b') 
+prune.tree <- prune.tree(treemod, best = 8)  
+y_hat_treep <- predict(prune.tree, newdata = testing, type = "class")
+table_treep <- table(testing$left, y_hat_treep) 
+sum(diag(table_treep)) / sum(table_treep)
+```
+
+The pruned tree has a slightly lower prediction rate but is more parsimonious. 
+
+Next, we tried bagging. Bagging is a method that utilizes a bootstrap sampling method, which involves creating multiple samples of the original training data to fit the model. Bagging averages the resulting trees to create a single predictive tree model. We used randomForest() and specified that it uses all predictor variables through "mtry = ". 
+
+```{r}
+library(randomForest)
+bag <- randomForest(left ~ ., data = training, important = T, 
+                    mtry = ncol(training) - 1)
+importance(bag)
+```
+
+In relation to the gini index (node purity), satislevel is deemed the most important variable in making the node pure. 
+
+```{r}
+yhat_bag <- predict(bag, testing, type = "class")
+table_bag <- table(testing$left, yhat_bag)
+sum(diag(table_bag)) / sum(table_bag) 
+```
+
+A bagged model significantly increases the accuracy rate. 
+
+Now we try random forest, which decorrelates the trees by forcing it to consider only a subset of variables when performing a split. Similar to bagging, random forest uses the bootstrapping sampling method, but before making a split in a tree it considers a subset of m predictors, as split candidates, from the total of p predictors, where m = root p.
+
+```{r}
+library(randomForest)
+rffit <- train(training[, -7], training[, 7], method = "rf", 
+               trControl = ctrl)
+rffit$bestTune 
+rfmod <- randomForest(left ~ ., data = training, important = T,
+                   ntree = 500, mtry = 2)
+yhat_rf <- predict(rfmod, testing, type = "class")
+table_rf <- table(testing$left, yhat_rf)
+sum(diag(table_rf)) / sum(table_rf) 
+```
+
+Prediction accuracy with random forest is higher than the bagged model. This is expected as random forest is superior at capturing high order interactions and is robust to outliers. 
+
+Next we try boosting. Boosting is a tree-based iterative learning method,
+where each tree is grown using information from previously grown trees. Specifically, the next iteration gives more weight to data points that were poorly predicted in the previous model; the next model is refined to better predict those data points. Hence boosting learns slowly, as opposed to a large single decision tree which could result in overfitting.
+
+```{r}
+library(gbm)
+n.cores = parallel::detectCores()
+boostfit <- train(training[, -7], training$left, 
+                  method = "gbm", metric = "ROC", trControl = ctrl)
+boostfit$bestTune
+boost.mod <- gbm(left == "Yes" ~ ., data = training, 
+                   distribution = "bernoulli", n.trees = 50,
+                   interaction.depth = 1, shrinkage = 0.1, n.minobsinnode = 10,
+                   verbose = F) 
+yhat.boost <- predict(boost.mod, newdata = testing, type = "response", n.trees = 50)
+zhat.boost <- as.integer(yhat.boost > 0.5)
+tableboost <- table(testing$left, zhat.boost)
+sum(diag(tableboost)) / sum(tableboost)
+```
+
+Boosting performs worse than the single tree model, which is a bit surprising. 
+
+Next we tried bartMachine, which uses Bayesian probability to make more sound predictions rather than relying on a rote and repetitive algorithm prediction process. 
+
+```{r}
+options(java.parameters = "-Xmx5g")
+library(rJava)
+library(bartMachine)
+set_bart_machine_num_cores(parallel::detectCores())
+bartfit <- train(training[, -7], training[, 7], method = "bartMachine",
+                 metric = "ROC", trControl = ctrl)
+bartfit$bestTune
+bMmodel <- bartMachine(training[, -7], y = training$left, num_trees = 50,
+                    alpha = 0.99, beta = 3)
+yhat_bart <- predict(bMmodel, new_data = testing[, -7], type = "class")
+table_bart <- table(testing$left, yhat_bart)
+sum(diag(table_bart)) / sum(table_bart)
+```
+
+ 
+
+## Neural Networks
+
+Next, we try neural networks. Neural networks closely mimic the workings of a human brain to connect predictors and the response. Neural networks perform linear combinations of the original predictors, which are then transformed by a nonlinear function to produce hidden units. Unlike other dimension reduction methods such as Partial Least Squares, there are no constraints that help define these linear combinations. We first performed a correlation test to see if there are highly correlated variables we should remove. 
+
+```{r}
+tooHigh <- findCorrelation(cor(training[, c(1:6)]), cutoff = .75)
+```
+
+```{r}
+library(ggplot2)
+library(reshape2)
+qplot(x = Var1, y = Var2, data = melt(cor(training[, c(1:6)])), fill = value, geom = "tile")
+```
+
+The heatmap demonstrates that there is little correlation between the predictors. Thus, we use the full predictor set. Now we perform averaging neural network, which aggregates multiple neural network models for better prediction. 
+
+```{r}
+library(nnet)
+nnetfit <- train(training[, -7], training[, 7], method = "avNNet",
+                 trControl = ctrl)
+nnetfit$bestTune
+nnetAvg <- avNNet(left ~ ., data = training, size = 5, decay = 0.1, 
+                  lineout = T, trace = F) 
+yhat_nnet <- predict(nnetAvg, testing[, -7])
+zhat_nnet <- as.integer(yhat_nnet[, 2] > 0.5)
+table_nnet <- table(testing$left, zhat_nnet)
+sum(diag(table_nnet)) / sum(table_nnet)
+```
+
+The neural network model has a high prediction accuracy rate. 
+
+The model with the highest accuracy rate is random Forest, and other tree-based models have proved highly predictive as well. As mentioned before, it may be because the variables are non-linear and potentially interactive. 
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
